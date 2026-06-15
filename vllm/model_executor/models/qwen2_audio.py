@@ -62,7 +62,13 @@ from vllm.multimodal.processing import (
 from vllm.sequence import IntermediateTensors
 from vllm.utils.tensor_schema import TensorSchema, TensorShape
 
-from .interfaces import MultiModalEmbeddings, SupportsMultiModal, SupportsPP
+from .interfaces import (
+    MultiModalEmbeddings,
+    SupportsLoRA,
+    SupportsMultiModal,
+    SupportsPP,
+)
+from .module_mapping import MultiModelKeys
 from .utils import AutoWeightsLoader, init_vllm_registered_model, maybe_prefix
 
 
@@ -328,7 +334,14 @@ class Qwen2AudioMultiModalProcessor(BaseMultiModalProcessor[Qwen2AudioProcessing
     info=Qwen2AudioProcessingInfo,
     dummy_inputs=Qwen2AudioDummyInputsBuilder,
 )
-class Qwen2AudioForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP):
+class Qwen2AudioForConditionalGeneration(
+    nn.Module, SupportsMultiModal, SupportsPP, SupportsLoRA
+):
+    packed_modules_mapping = {
+        "qkv_proj": ["q_proj", "k_proj", "v_proj"],
+        "gate_up_proj": ["gate_proj", "up_proj"],
+    }
+
     @classmethod
     def get_placeholder_str(cls, modality: str, i: int) -> str | None:
         if modality.startswith("audio"):
@@ -483,3 +496,24 @@ class Qwen2AudioForConditionalGeneration(nn.Module, SupportsMultiModal, Supports
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         loader = AutoWeightsLoader(self)
         return loader.load_weights(weights)
+
+    def get_mm_mapping(self) -> MultiModelKeys:
+        """
+        Get the module prefix in multimodal models
+        """
+        return MultiModelKeys.from_string_field(
+            language_model="language_model",
+            connector="multi_modal_projector",
+            tower_model="audio_tower",
+        )
+
+    def get_num_mm_encoder_tokens(self, num_audio_tokens: int) -> int:
+        # The Whisper-style audio tower's transformer layers run on the
+        # conv-downsampled sequence, whose length already equals the number of
+        # audio placeholder tokens in the prompt, so the count is unchanged.
+        return num_audio_tokens
+
+    def get_num_mm_connector_tokens(self, num_audio_tokens: int) -> int:
+        # The connector is a single Linear applied per token (see
+        # Qwen2AudioMultiModalProjector), so it preserves the token count (1:1).
+        return num_audio_tokens
